@@ -1,11 +1,11 @@
 // src/modules/auth/auth.service.ts
-// Business logic for user registration, credential verification, and refresh token rotation.
+// Business logic for user registration, hybrid session management, and atomic token rotation.
 
 import crypto from "crypto";
 import argon2 from "argon2";
-import { eq, and, isNull } from "drizzle-orm";
+import { eq, and, isNull, gt } from "drizzle-orm";
 import { db } from "../../db";
-import { users, refreshTokens, User } from "../../db/schema";
+import { users, sessions, devices, User } from "../../db/schema";
 import { RegisterInput, LoginInput } from "./auth.schemas";
 
 // Standard application error containing HTTP status code
@@ -16,9 +16,11 @@ export class HttpError extends Error {
   }
 }
 
-// Pre-computed argon2id hash of a dummy password to ensure constant-time response for unknown emails
-const DUMMY_HASH =
-  "$argon2id$v=19$m=65536,t=3,p=4$eW91cnNhbHRoZXJlMTIzNA$e8aW0M5Q9N7aP6iO3g0tL2m1K9j8H7g6F5e4D3c2B1A";
+// Generate a real argon2id hash at startup with identical options to register
+// This promise is awaited on unknown-email login paths to eliminate timing differences
+const dummyHashPromise = argon2.hash(crypto.randomBytes(16).toString("hex"), {
+  type: argon2.argon2id,
+});
 
 // Refresh token validity duration: 7 days
 const REFRESH_TOKEN_TTL_MS = 7 * 24 * 60 * 60 * 1000;
@@ -67,8 +69,16 @@ export class AuthService {
     return newUser;
   }
 
-  // Verifies credentials and creates a persistent refresh token row
-  async login(input: LoginInput): Promise<{ user: Omit<User, "passwordHash">; refreshToken: string }> {
+  // Verifies credentials, records device activity, and creates a new session
+  async login(
+    input: LoginInput,
+    userAgentHeader?: string
+  ): Promise<{
+    user: Omit<User, "passwordHash">;
+    sessionId: string;
+    deviceId: string;
+    refreshToken: string;
+  }> {
     const [user] = await db
       .select()
       .from(users)
@@ -76,8 +86,9 @@ export class AuthService {
       .limit(1);
 
     if (!user) {
-      // Run dummy argon2 verify to prevent user enumeration via timing analysis
-      await argon2.verify(DUMMY_HASH, input.password).catch(() => false);
+      // Run argon2 verify against real startup-computed dummy hash to prevent email enumeration via timing
+      const dummyHash = await dummyHashPromise;
+      await argon2.verify(dummyHash, input.password).catch(() => false);
       throw new HttpError(401, "Invalid credentials");
     }
 
@@ -86,16 +97,59 @@ export class AuthService {
       throw new HttpError(401, "Invalid credentials");
     }
 
-    // Generate random refresh token and store only its SHA-256 hash
+    // Resolve device name from input, User-Agent, or fallback
+    const resolvedDeviceName =
+      input.deviceName?.trim() ||
+      userAgentHeader?.slice(0, 100).trim() ||
+      "Unknown device";
+
+    // Find or create device record for the user
+    const [existingDevice] = await db
+      .select()
+      .from(devices)
+      .where(
+        and(
+          eq(devices.userId, user.id),
+          eq(devices.deviceName, resolvedDeviceName)
+        )
+      )
+      .limit(1);
+
+    let deviceId: string;
+    if (existingDevice) {
+      await db
+        .update(devices)
+        .set({ lastSeenAt: new Date() })
+        .where(eq(devices.id, existingDevice.id));
+      deviceId = existingDevice.id;
+    } else {
+      const [newDevice] = await db
+        .insert(devices)
+        .values({
+          userId: user.id,
+          deviceName: resolvedDeviceName,
+          lastSeenAt: new Date(),
+        })
+        .returning({ id: devices.id });
+      deviceId = newDevice.id;
+    }
+
+    // Generate random refresh token and store only its SHA-256 hash in a new session
     const rawRefreshToken = generateRefreshToken();
-    const tokenHash = hashToken(rawRefreshToken);
+    const refreshTokenHash = hashToken(rawRefreshToken);
     const expiresAt = new Date(Date.now() + REFRESH_TOKEN_TTL_MS);
 
-    await db.insert(refreshTokens).values({
-      userId: user.id,
-      tokenHash,
-      expiresAt,
-    });
+    const [newSession] = await db
+      .insert(sessions)
+      .values({
+        userId: user.id,
+        deviceId,
+        refreshTokenHash,
+        userAgent: userAgentHeader || null,
+        expiresAt,
+        lastUsedAt: new Date(),
+      })
+      .returning({ id: sessions.id });
 
     return {
       user: {
@@ -104,59 +158,66 @@ export class AuthService {
         displayName: user.displayName,
         createdAt: user.createdAt,
       },
+      sessionId: newSession.id,
+      deviceId,
       refreshToken: rawRefreshToken,
     };
   }
 
-  // Rotates refresh tokens inside a single database transaction
-  async rotateRefreshToken(rawRefreshToken: string): Promise<{ userId: string; newRefreshToken: string }> {
-    const tokenHash = hashToken(rawRefreshToken);
+  // Atomically rotates the refresh token within the same session using a single SQL UPDATE
+  async rotateRefreshToken(
+    rawRefreshToken: string
+  ): Promise<{ userId: string; sessionId: string; newRefreshToken: string }> {
+    const oldRefreshTokenHash = hashToken(rawRefreshToken);
+    const newRawRefreshToken = generateRefreshToken();
+    const newRefreshTokenHash = hashToken(newRawRefreshToken);
+    const newExpiresAt = new Date(Date.now() + REFRESH_TOKEN_TTL_MS);
 
-    const [tokenRecord] = await db
-      .select()
-      .from(refreshTokens)
-      .where(eq(refreshTokens.tokenHash, tokenHash))
-      .limit(1);
+    // Atomic update: only one concurrent request can match the old hash
+    const [updatedSession] = await db
+      .update(sessions)
+      .set({
+        refreshTokenHash: newRefreshTokenHash,
+        lastUsedAt: new Date(),
+        expiresAt: newExpiresAt,
+      })
+      .where(
+        and(
+          eq(sessions.refreshTokenHash, oldRefreshTokenHash),
+          isNull(sessions.revokedAt),
+          gt(sessions.expiresAt, new Date())
+        )
+      )
+      .returning({
+        id: sessions.id,
+        userId: sessions.userId,
+      });
 
-    // Reject if token is missing, already revoked, or expired
-    if (!tokenRecord || tokenRecord.revokedAt !== null || tokenRecord.expiresAt <= new Date()) {
+    if (!updatedSession) {
       throw new HttpError(401, "Invalid or expired refresh token");
     }
 
-    const newRawRefreshToken = generateRefreshToken();
-    const newTokenHash = hashToken(newRawRefreshToken);
-    const newExpiresAt = new Date(Date.now() + REFRESH_TOKEN_TTL_MS);
-
-    // Atomically revoke the old token and issue the new token
-    await db.transaction(async (tx) => {
-      await tx
-        .update(refreshTokens)
-        .set({ revokedAt: new Date() })
-        .where(eq(refreshTokens.id, tokenRecord.id));
-
-      await tx.insert(refreshTokens).values({
-        userId: tokenRecord.userId,
-        tokenHash: newTokenHash,
-        expiresAt: newExpiresAt,
-      });
-    });
-
     return {
-      userId: tokenRecord.userId,
+      userId: updatedSession.userId,
+      sessionId: updatedSession.id,
       newRefreshToken: newRawRefreshToken,
     };
   }
 
-  // Revokes a refresh token on logout (always safe and silent)
+  // Revokes the session associated with the refresh token on logout
   async logout(rawRefreshToken: string): Promise<void> {
-    const tokenHash = hashToken(rawRefreshToken);
+    const refreshTokenHash = hashToken(rawRefreshToken);
 
     await db
-      .update(refreshTokens)
+      .update(sessions)
       .set({ revokedAt: new Date() })
-      .where(and(eq(refreshTokens.tokenHash, tokenHash), isNull(refreshTokens.revokedAt)));
+      .where(
+        and(
+          eq(sessions.refreshTokenHash, refreshTokenHash),
+          isNull(sessions.revokedAt)
+        )
+      );
   }
 }
 
 export const authService = new AuthService();
-

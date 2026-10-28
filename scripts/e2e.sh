@@ -77,10 +77,11 @@ BODY=$(echo "$RESP" | sed '$d')
 if [ "$HTTP_CODE" -eq 200 ]; then
   ACCESS_TOKEN=$(node -e "console.log(JSON.parse(process.argv[1]).accessToken || '')" "$BODY")
   REFRESH_TOKEN=$(node -e "console.log(JSON.parse(process.argv[1]).refreshToken || '')" "$BODY")
-  if [ -n "$ACCESS_TOKEN" ] && [ -n "$REFRESH_TOKEN" ]; then
-    pass "Login returned 200 with accessToken and refreshToken"
+  DEVICE_ID=$(node -e "console.log(JSON.parse(process.argv[1]).deviceId || '')" "$BODY")
+  if [ -n "$ACCESS_TOKEN" ] && [ -n "$REFRESH_TOKEN" ] && [ -n "$DEVICE_ID" ]; then
+    pass "Login returned 200 with accessToken, refreshToken, and deviceId ($DEVICE_ID)"
   else
-    fail "Login response missing tokens: $BODY"
+    fail "Login response missing tokens or deviceId: $BODY"
   fi
 else
   fail "Expected 200 but got $HTTP_CODE: $BODY"

@@ -30,7 +30,7 @@ export const authRoutes: FastifyPluginAsync = async (app: FastifyInstance) => {
     }
   );
 
-  // POST /auth/login - Authenticate with email & password, returning access + refresh tokens
+  // POST /auth/login - Authenticate with credentials, returning access token, refresh token, and deviceId
   app.post(
     "/auth/login",
     {
@@ -44,23 +44,26 @@ export const authRoutes: FastifyPluginAsync = async (app: FastifyInstance) => {
     },
     async (request, reply) => {
       const body = loginSchema.parse(request.body);
-      const { user, refreshToken } = await authService.login(body);
+      const userAgent = request.headers["user-agent"];
+      const { user, sessionId, deviceId, refreshToken } =
+        await authService.login(body, userAgent);
 
-      // Issue 15-minute JWT containing ONLY sub (user id), iat, and exp
+      // Access JWT payload contains strictly { sub: userId, sid: sessionId } (15-minute expiration)
       const accessToken = app.jwt.sign(
-        { sub: user.id },
+        { sub: user.id, sid: sessionId },
         { expiresIn: "15m" }
       );
 
       return reply.status(200).send({
         accessToken,
         refreshToken,
+        deviceId,
         expiresIn: 900,
       });
     }
   );
 
-  // POST /auth/refresh - Exchange a valid refresh token for a new access + refresh pair
+  // POST /auth/refresh - Atomically rotate refresh token within the same session
   app.post(
     "/auth/refresh",
     {
@@ -74,12 +77,12 @@ export const authRoutes: FastifyPluginAsync = async (app: FastifyInstance) => {
     },
     async (request, reply) => {
       const body = refreshSchema.parse(request.body);
-      const { userId, newRefreshToken } = await authService.rotateRefreshToken(
-        body.refreshToken
-      );
+      const { userId, sessionId, newRefreshToken } =
+        await authService.rotateRefreshToken(body.refreshToken);
 
+      // New access token maintains the same session ID
       const accessToken = app.jwt.sign(
-        { sub: userId },
+        { sub: userId, sid: sessionId },
         { expiresIn: "15m" }
       );
 
@@ -91,7 +94,7 @@ export const authRoutes: FastifyPluginAsync = async (app: FastifyInstance) => {
     }
   );
 
-  // POST /auth/logout - Invalidate a refresh token
+  // POST /auth/logout - Revokes active session, immediately invalidating the access token
   app.post(
     "/auth/logout",
     {
@@ -104,4 +107,3 @@ export const authRoutes: FastifyPluginAsync = async (app: FastifyInstance) => {
     }
   );
 };
-

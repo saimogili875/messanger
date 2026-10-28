@@ -6,9 +6,13 @@ import { drizzle } from "drizzle-orm/postgres-js";
 import * as schema from "./schema";
 import { env } from "../config/env";
 
+const connectionString =
+  env.NODE_ENV === "test" && env.TEST_DATABASE_URL
+    ? env.TEST_DATABASE_URL
+    : env.DATABASE_URL;
+
 // Connection pool configured via environment connection string
-export const client = postgres(env.DATABASE_URL);
+export const client = postgres(connectionString);
 
 // Drizzle ORM database instance with registered schema
 export const db = drizzle(client, { schema });
-

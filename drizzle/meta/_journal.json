@@ -15,6 +15,13 @@
       "when": 1793201458686,
       "tag": "0001_gifted_the_enforcers",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1793202758631,
+      "tag": "0002_create_sessions_drop_refresh_tokens",
+      "breakpoints": true
     }
   ]
 }

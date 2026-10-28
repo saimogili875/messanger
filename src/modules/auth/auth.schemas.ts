@@ -29,6 +29,12 @@ export const loginSchema = z.object({
     .toLowerCase()
     .email("Invalid email format"),
   password: z.string().min(1, "Password is required"),
+  deviceName: z
+    .string()
+    .trim()
+    .min(1, "Device name must not be empty")
+    .max(100, "Device name must not exceed 100 characters")
+    .optional(),
 });
 
 // Refresh token payload schema

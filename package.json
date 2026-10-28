@@ -9,12 +9,15 @@
     "start": "node dist/server.js",
     "db:generate": "drizzle-kit generate",
     "db:migrate": "drizzle-kit migrate",
+    "test": "vitest run",
     "e2e": "bash scripts/e2e.sh"
   },
   "keywords": [],
   "author": "",
   "license": "ISC",
   "dependencies": {
+    "@fastify/cors": "^11.3.1",
+    "@fastify/helmet": "^13.2.0",
     "@fastify/jwt": "^9.0.4",
     "@fastify/rate-limit": "^10.2.2",
     "argon2": "^0.41.1",
@@ -28,6 +31,8 @@
     "@types/node": "^22.10.7",
     "drizzle-kit": "^0.30.2",
     "tsx": "^4.19.2",
-    "typescript": "^5.7.3"
+    "typescript": "^5.7.3",
+    "vite": "^8.3.5",
+    "vitest": "^5.0.5"
   }
 }
