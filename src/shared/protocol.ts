@@ -149,3 +149,4 @@ export const errorPayloadSchema = z.object({
   details: z.unknown().optional(),
 });
 export type ErrorPayload = z.infer<typeof errorPayloadSchema>;
+
