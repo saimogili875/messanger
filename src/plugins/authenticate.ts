@@ -11,3 +11,4 @@ export async function authenticate(request: FastifyRequest, _reply: FastifyReply
     throw new HttpError(401, "Unauthorized");
   }
 }
+

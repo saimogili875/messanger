@@ -10,6 +10,8 @@ import {
   pgEnum,
   primaryKey,
   index,
+  unique,
+  bigint,
 } from "drizzle-orm/pg-core";
 
 // Enum representing the type of chat (direct 1-on-1 or group chat)
@@ -35,14 +37,18 @@ export const devices = pgTable("devices", {
   createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
 });
 
-// Chats table storing direct or group conversations
+// Chats table storing direct or group conversations with monotonic sequence counter
 export const chats = pgTable("chats", {
   id: uuid("id").primaryKey().defaultRandom(),
   type: chatTypeEnum("type").notNull(),
+  // directKey stores sorted "userIdA:userIdB" for 1-to-1 chats to prevent duplicate chat creation
+  directKey: varchar("direct_key", { length: 100 }).unique(),
+  // Monotonically increasing sequence number assigned atomically per chat in Postgres
+  lastSeq: bigint("last_seq", { mode: "number" }).default(0).notNull(),
   createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
 });
 
-// Chat members mapping users to chats with composite primary key
+// Chat members mapping users to chats with delivery and read receipt progress cursors
 export const chatMembers = pgTable(
   "chat_members",
   {
@@ -52,6 +58,8 @@ export const chatMembers = pgTable(
     userId: uuid("user_id")
       .notNull()
       .references(() => users.id, { onDelete: "cascade" }),
+    lastDeliveredSeq: bigint("last_delivered_seq", { mode: "number" }).default(0).notNull(),
+    lastReadSeq: bigint("last_read_seq", { mode: "number" }).default(0).notNull(),
     joinedAt: timestamp("joined_at", { withTimezone: true }).defaultNow().notNull(),
   },
   (table) => [
@@ -59,7 +67,7 @@ export const chatMembers = pgTable(
   ]
 );
 
-// Messages table storing chat messages
+// Messages table storing chat messages ordered by per-chat sequence number
 export const messages = pgTable(
   "messages",
   {
@@ -70,11 +78,22 @@ export const messages = pgTable(
     senderId: uuid("sender_id")
       .notNull()
       .references(() => users.id, { onDelete: "cascade" }),
+    clientMsgId: uuid("client_msg_id").notNull(),
+    seq: bigint("seq", { mode: "number" }).notNull(),
     body: text("body").notNull(),
     createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
   },
   (table) => [
-    index("messages_chat_id_created_at_idx").on(table.chatId, table.createdAt),
+    // Ensure strict monotonicity and gap-free sequencing per chat
+    unique("messages_chat_id_seq_unique").on(table.chatId, table.seq),
+    // Enforce idempotency: same client message ID from sender cannot be inserted twice
+    unique("messages_chat_id_sender_client_msg_unique").on(
+      table.chatId,
+      table.senderId,
+      table.clientMsgId
+    ),
+    // B-tree index for fast range scans when clients sync messages afterSeq
+    index("messages_chat_id_seq_idx").on(table.chatId, table.seq),
   ]
 );
 
@@ -93,6 +112,15 @@ export const refreshTokens = pgTable("refresh_tokens", {
 // Inferred TypeScript types for selecting and inserting rows
 export type User = typeof users.$inferSelect;
 export type NewUser = typeof users.$inferInsert;
+
+export type Chat = typeof chats.$inferSelect;
+export type NewChat = typeof chats.$inferInsert;
+
+export type ChatMember = typeof chatMembers.$inferSelect;
+export type NewChatMember = typeof chatMembers.$inferInsert;
+
+export type Message = typeof messages.$inferSelect;
+export type NewMessage = typeof messages.$inferInsert;
 
 export type RefreshToken = typeof refreshTokens.$inferSelect;
 export type NewRefreshToken = typeof refreshTokens.$inferInsert;

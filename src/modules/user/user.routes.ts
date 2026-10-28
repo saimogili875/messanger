@@ -37,3 +37,4 @@ export const userRoutes: FastifyPluginAsync = async (app: FastifyInstance) => {
     }
   );
 };
+

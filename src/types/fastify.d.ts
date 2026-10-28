@@ -9,3 +9,4 @@ declare module "@fastify/jwt" {
     user: { sub: string };
   }
 }
+

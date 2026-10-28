@@ -11,3 +11,4 @@ export const client = postgres(env.DATABASE_URL);
 
 // Drizzle ORM database instance with registered schema
 export const db = drizzle(client, { schema });
+

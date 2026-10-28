@@ -104,3 +104,4 @@ export const authRoutes: FastifyPluginAsync = async (app: FastifyInstance) => {
     }
   );
 };
+
