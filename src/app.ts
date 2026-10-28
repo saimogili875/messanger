@@ -12,6 +12,11 @@ import { HttpError } from "./modules/auth/auth.service";
 import { healthRoutes } from "./routes/health";
 import { authRoutes } from "./modules/auth/auth.routes";
 import { userRoutes } from "./modules/user/user.routes";
+import { filesRoutes } from "./modules/files/files.routes";
+import { groupRoutes } from "./modules/group/group.routes";
+import { chatRoutes } from "./modules/chat/chat.routes";
+import { searchRoutes } from "./modules/search/search.routes";
+import { initRealtimeManager } from "./realtime/socket";
 
 export function buildApp(): FastifyInstance {
   const app = fastify({
@@ -143,6 +148,17 @@ export function buildApp(): FastifyInstance {
   app.register(healthRoutes);
   app.register(authRoutes);
   app.register(userRoutes);
+  app.register(filesRoutes);
+  app.register(groupRoutes);
+  app.register(chatRoutes);
+  app.register(searchRoutes);
+
+  // Initialize Socket.IO server on Fastify's underlying HTTP server
+  const realtime = initRealtimeManager(app.server);
+
+  app.addHook("onClose", async () => {
+    await realtime.close();
+  });
 
   return app;
 }

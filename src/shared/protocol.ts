@@ -17,21 +17,39 @@ export const SOCKET_EVENTS = {
   PRESENCE_UPDATE: "presence:update",
   SYNC_REQUEST: "sync:request",
   SYNC_RESPONSE: "sync:response",
+  FILE_UPDATE: "file:update",
+  GROUP_UPDATED: "group:updated",
+  GROUP_MEMBER_ADDED: "group:member_added",
+  GROUP_MEMBER_REMOVED: "group:member_removed",
+  GROUP_ROLE_CHANGED: "group:role_changed",
+  GROUP_DELETED: "group:deleted",
+  CHAT_ADDED: "chat:added",
+  CHAT_REMOVED: "chat:removed",
+  REACTION_ADD: "reaction:add",
+  REACTION_REMOVE: "reaction:remove",
+  REACTION_UPDATE: "reaction:update",
   ERROR: "error",
 } as const;
 
 export type SocketEventName = (typeof SOCKET_EVENTS)[keyof typeof SOCKET_EVENTS];
 
 // 1. message:send (client -> server)
-export const messageSendSchema = z.object({
-  chatId: z.string().uuid("Invalid chat ID"),
-  clientMsgId: z.string().uuid("Invalid client message ID"),
-  body: z
-    .string()
-    .trim()
-    .min(1, "Message cannot be empty")
-    .max(4000, "Message cannot exceed 4000 characters"),
-});
+export const messageSendSchema = z
+  .object({
+    chatId: z.string().uuid("Invalid chat ID"),
+    clientMsgId: z.string().uuid("Invalid client message ID"),
+    body: z
+      .string()
+      .trim()
+      .max(4000, "Message cannot exceed 4000 characters")
+      .default(""),
+    fileId: z.string().uuid().optional(),
+    messageType: z.enum(["text", "image", "pdf", "document", "video"]).default("text"),
+  })
+  .refine((data) => data.body.length > 0 || !!data.fileId, {
+    message: "Message must contain either text content or a file attachment",
+    path: ["body"],
+  });
 export type MessageSendPayload = z.infer<typeof messageSendSchema>;
 
 // 2. message:ack (server -> client acknowledgement callback)
@@ -61,6 +79,25 @@ export const messageNewSchema = z.object({
   clientMsgId: z.string().uuid(),
   seq: z.number().int().positive(),
   body: z.string(),
+  fileId: z.string().uuid().nullable().optional(),
+  messageType: z.string().optional(),
+  type: z.enum(["user", "system"]).optional().default("user"),
+  meta: z.unknown().optional(),
+  senderName: z.string().optional(),
+  file: z
+    .object({
+      id: z.string().uuid(),
+      originalName: z.string(),
+      mimeType: z.string(),
+      sizeBytes: z.number(),
+      fileType: z.string(),
+      width: z.number().nullable().optional(),
+      height: z.number().nullable().optional(),
+      durationSeconds: z.number().nullable().optional(),
+      pageCount: z.number().nullable().optional(),
+      status: z.string().optional(),
+    })
+    .optional(),
   createdAt: z.string(),
 });
 export type MessageNewPayload = z.infer<typeof messageNewSchema>;
@@ -142,11 +179,84 @@ export const syncResponseSchema = z.object({
 export type SyncChatResponse = z.infer<typeof syncChatResponseSchema>;
 export type SyncResponsePayload = z.infer<typeof syncResponseSchema>;
 
-// 13. error (server -> client)
+// 13. file:update (server -> client broadcast)
+export const fileUpdateSchema = z.object({
+  fileId: z.string().uuid(),
+  status: z.enum(["uploading", "processing", "ready", "blocked", "failed"]),
+  failureReason: z.string().optional(),
+});
+export type FileUpdatePayload = z.infer<typeof fileUpdateSchema>;
+
+// 14. Reactions
+export const ALLOWED_REACTIONS = ["👍", "❤️", "😂", "😮", "😢", "🙏"] as const;
+export type AllowedEmoji = (typeof ALLOWED_REACTIONS)[number];
+
+export const reactionSchema = z.object({
+  chatId: z.string().uuid("Invalid chat ID"),
+  messageId: z.string().uuid("Invalid message ID"),
+  emoji: z.enum(ALLOWED_REACTIONS, {
+    errorMap: () => ({ message: "Emoji must be one of 👍, ❤️, 😂, 😮, 😢, 🙏" }),
+  }),
+});
+export type ReactionPayload = z.infer<typeof reactionSchema>;
+
+export const reactionUpdateSchema = z.object({
+  chatId: z.string().uuid(),
+  messageId: z.string().uuid(),
+  emoji: z.string(),
+  userId: z.string().uuid(),
+  action: z.enum(["added", "removed"]),
+  count: z.number().int().nonnegative(),
+});
+export type ReactionUpdatePayload = z.infer<typeof reactionUpdateSchema>;
+
+// 15. Group Realtime Events
+export const groupUpdatedSchema = z.object({
+  chatId: z.string().uuid(),
+  name: z.string(),
+});
+export type GroupUpdatedPayload = z.infer<typeof groupUpdatedSchema>;
+
+export const groupMemberAddedSchema = z.object({
+  chatId: z.string().uuid(),
+  members: z.array(
+    z.object({
+      userId: z.string().uuid(),
+      displayName: z.string(),
+      role: z.enum(["owner", "admin", "member"]),
+    })
+  ),
+});
+export type GroupMemberAddedPayload = z.infer<typeof groupMemberAddedSchema>;
+
+export const groupMemberRemovedSchema = z.object({
+  chatId: z.string().uuid(),
+  userId: z.string().uuid(),
+  reason: z.enum(["removed", "left"]),
+});
+export type GroupMemberRemovedPayload = z.infer<typeof groupMemberRemovedSchema>;
+
+export const groupRoleChangedSchema = z.object({
+  chatId: z.string().uuid(),
+  userId: z.string().uuid(),
+  role: z.enum(["owner", "admin", "member"]),
+});
+export type GroupRoleChangedPayload = z.infer<typeof groupRoleChangedSchema>;
+
+export const groupDeletedSchema = z.object({
+  chatId: z.string().uuid(),
+});
+export type GroupDeletedPayload = z.infer<typeof groupDeletedSchema>;
+
+export const chatRoomEventSchema = z.object({
+  chatId: z.string().uuid(),
+});
+export type ChatRoomEventPayload = z.infer<typeof chatRoomEventSchema>;
+
+// 16. error (server -> client)
 export const errorPayloadSchema = z.object({
   code: z.string(),
   message: z.string(),
   details: z.unknown().optional(),
 });
 export type ErrorPayload = z.infer<typeof errorPayloadSchema>;
-

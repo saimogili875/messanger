@@ -17,6 +17,53 @@ services:
       timeout: 5s
       retries: 5
 
+  redis:
+    image: redis:7-alpine
+    container_name: messenger-redis
+    restart: always
+    ports:
+      - "127.0.0.1:6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  clamav:
+    image: clamav/clamav:latest
+    container_name: messenger-clamav
+    restart: always
+    ports:
+      - "127.0.0.1:3310:3310"
+    volumes:
+      - clamav_data:/var/lib/clamav
+
+  media-worker:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.worker
+    container_name: messenger-media-worker
+    restart: always
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    env_file:
+      - .env
+    environment:
+      - NODE_ENV=production
+      - REDIS_URL=redis://redis:6379
+      - DATABASE_URL=postgresql://postgres:postgrespassword@postgres:5432/messenger_db
+    deploy:
+      resources:
+        limits:
+          cpus: '1.5'
+          memory: 1536M
+
 volumes:
   postgres_data:
-
+  redis_data:
+  clamav_data:

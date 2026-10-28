@@ -22,6 +22,27 @@
       "when": 1793202758631,
       "tag": "0002_create_sessions_drop_refresh_tokens",
       "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 1793206421038,
+      "tag": "0003_add_files_and_quotas",
+      "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1793208500000,
+      "tag": "0004_phase6_schema",
+      "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1793208510000,
+      "tag": "0005_phase6_search_and_owner",
+      "breakpoints": true
     }
   ]
 }

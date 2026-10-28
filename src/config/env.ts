@@ -28,6 +28,32 @@ const envSchema = z.object({
         .map((s) => s.trim())
         .filter(Boolean)
     ),
+  // Redis configuration for BullMQ background workers and caching
+  REDIS_URL: z.string().default("redis://127.0.0.1:6379"),
+  // ClamAV antivirus daemon configuration
+  CLAMAV_HOST: z.string().default("127.0.0.1"),
+  CLAMAV_PORT: z.coerce.number().default(3310),
+  // Cloudflare R2 object storage credentials (S3 API compatible)
+  R2_ACCOUNT_ID: z.string().default("local-test-account"),
+  R2_ACCESS_KEY_ID: z.string().default("local-test-key"),
+  R2_SECRET_ACCESS_KEY: z.string().default("local-test-secret"),
+  R2_BUCKET_NAME: z.string().default("messenger-media"),
+  R2_PUBLIC_DOMAIN: z.string().optional(),
+  R2_ENDPOINT: z.string().optional(),
+  // Phase 5 media size, duration, and conversion limits
+  VIDEO_MAX_DURATION_SECONDS: z.coerce.number().default(600), // Max 10 minutes
+  DOCUMENT_MAX_SIZE_BYTES: z.coerce.number().default(50 * 1024 * 1024), // 50 MB
+  VIDEO_MAX_SIZE_BYTES: z.coerce.number().default(200 * 1024 * 1024), // 200 MB
+  IMAGE_MAX_SIZE_BYTES: z.coerce.number().default(20 * 1024 * 1024), // 20 MB
+  PDF_MAX_SIZE_BYTES: z.coerce.number().default(50 * 1024 * 1024), // 50 MB
+  USER_STORAGE_QUOTA_BYTES: z.coerce.number().default(1024 * 1024 * 1024), // 1 GB per user
+  USER_DAILY_UPLOAD_LIMIT_BYTES: z.coerce.number().default(500 * 1024 * 1024), // 500 MB per day
+  LIBREOFFICE_TIMEOUT_MS: z.coerce.number().default(120000), // 120 seconds conversion timeout
+  FFMPEG_PATH: z.string().default("ffmpeg"),
+  FFPROBE_PATH: z.string().default("ffprobe"),
+  // Phase 6 group chat & search configuration
+  MAX_GROUP_MEMBERS: z.coerce.number().default(256),
+  SEARCH_RATE_LIMIT_PER_MINUTE: z.coerce.number().default(30),
 });
 
 const parsedEnv = envSchema.safeParse(process.env);
