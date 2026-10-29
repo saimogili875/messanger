@@ -240,3 +240,4 @@ export async function syncAllChats(): Promise<void> {
     }
   });
 }
+

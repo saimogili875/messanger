@@ -131,3 +131,4 @@ curl -I "$DOWNLOAD_URL"
 - `HTTP/1.1 200 OK`
 - `Content-Disposition: attachment; filename="test-photo.jpg"` (or inline for previewable formats).
 - URL contains `X-Amz-Expires=300`.
+

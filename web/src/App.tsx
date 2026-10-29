@@ -72,3 +72,4 @@ export const App: React.FC = () => {
 
   return currentUser ? <AppLayout /> : <AuthScreen />;
 };
+

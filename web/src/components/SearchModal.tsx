@@ -169,3 +169,4 @@ export const SearchModal: React.FC<Props> = ({ isOpen, onClose }) => {
     </div>
   );
 };
+

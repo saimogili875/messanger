@@ -23,3 +23,4 @@ export function createRedisClient(): IORedis {
 }
 
 export const redis = createRedisClient();
+

@@ -26,6 +26,8 @@ import { queuePendingMessage, removeConfirmedMessage } from "../services/outbox"
 import { api } from "../services/api";
 
 const REACTION_EMOJIS = ["👍", "❤️", "😂", "😮", "😢", "🙏", "🔥", "🎉"];
+const EMPTY_MESSAGES: ChatMessage[] = [];
+const EMPTY_TYPING: string[] = [];
 
 interface Props {
   onOpenInfo: () => void;
@@ -37,10 +39,16 @@ export const ChatScreen: React.FC<Props> = ({ onOpenInfo, onViewFile }) => {
   const chats = useChatStore((s) => s.chats);
   const currentChat = chats.find((c) => c.id === activeChatId);
   const currentUser = useChatStore((s) => s.currentUser);
-  const messages = useChatStore((s) => (activeChatId ? s.messages[activeChatId] || [] : []));
+  const allMessages = useChatStore((s) => s.messages);
+  const allTyping = useChatStore((s) => s.typing);
   const addMessage = useChatStore((s) => s.addMessage);
-  const typingUsers = useChatStore((s) => (activeChatId && s.typing[activeChatId] ? Array.from(s.typing[activeChatId]) : []));
   const presence = useChatStore((s) => s.presence);
+
+  const messages = (activeChatId && allMessages[activeChatId]) ? allMessages[activeChatId] : EMPTY_MESSAGES;
+  const activeTypingSet = activeChatId ? allTyping[activeChatId] : undefined;
+  const typingUsers = React.useMemo(() => {
+    return activeTypingSet ? Array.from(activeTypingSet) : EMPTY_TYPING;
+  }, [activeTypingSet]);
 
   const [inputText, setInputText] = useState("");
   const [activeEmojiMenuMsgId, setActiveEmojiMenuMsgId] = useState<string | null>(null);
@@ -619,3 +627,4 @@ export const ChatScreen: React.FC<Props> = ({ onOpenInfo, onViewFile }) => {
     </div>
   );
 };
+

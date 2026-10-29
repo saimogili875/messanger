@@ -148,3 +148,4 @@ export const ChatListItem: React.FC<Props> = ({ chat, isActive, onSelect }) => {
     </div>
   );
 };
+

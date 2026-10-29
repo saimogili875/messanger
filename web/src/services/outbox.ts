@@ -78,3 +78,4 @@ export async function clearAllOutbox(): Promise<void> {
   const db = await getDb();
   await db.clear("outbox");
 }
+

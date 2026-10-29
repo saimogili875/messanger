@@ -5,3 +5,4 @@ CREATE TABLE IF NOT EXISTS "used_refresh_tokens" (
 );
 
 CREATE INDEX IF NOT EXISTS "used_refresh_tokens_session_id_idx" ON "used_refresh_tokens" ("session_id");
+

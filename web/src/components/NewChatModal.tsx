@@ -153,3 +153,4 @@ export const NewChatModal: React.FC<Props> = ({ isOpen, onClose }) => {
     </div>
   );
 };
+

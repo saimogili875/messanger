@@ -238,3 +238,4 @@ export const CreateGroupModal: React.FC<Props> = ({ isOpen, onClose }) => {
     </div>
   );
 };
+

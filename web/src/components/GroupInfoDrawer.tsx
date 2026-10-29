@@ -278,3 +278,4 @@ export const GroupInfoDrawer: React.FC<Props> = ({ isOpen, onClose, chat }) => {
     </div>
   );
 };
+
