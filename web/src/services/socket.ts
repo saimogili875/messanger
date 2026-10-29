@@ -90,6 +90,13 @@ export function initSocket(): Socket {
     const currentChat = state.chats.find((c) => c.id === newMsg.chatId);
     const lastSeq = currentChat?.lastSeq || 0;
 
+    // If chat is not in list yet, refetch all user chats
+    if (!currentChat) {
+      api.get("/chats").then((res) => {
+        useChatStore.getState().setChats(res.data);
+      }).catch(() => {});
+    }
+
     // Detect sequence gaps: if incoming seq > lastSeq + 1, sync backfill
     if (newMsg.seq > lastSeq + 1 && lastSeq > 0) {
       syncChatHistory(newMsg.chatId, lastSeq);
@@ -117,6 +124,22 @@ export function initSocket(): Socket {
         chatId: newMsg.chatId,
         upToSeq: newMsg.seq,
       });
+    }
+  });
+
+  // New chat conversation added for user
+  socketInstance.on("chat:added", () => {
+    api.get("/chats").then((res) => {
+      useChatStore.getState().setChats(res.data);
+    }).catch(() => {});
+  });
+
+  // Chat removed from user
+  socketInstance.on("chat:removed", (data: { chatId: string }) => {
+    const state = useChatStore.getState();
+    state.setChats(state.chats.filter((c) => c.id !== data.chatId));
+    if (state.activeChatId === data.chatId) {
+      state.setActiveChatId(null);
     }
   });
 

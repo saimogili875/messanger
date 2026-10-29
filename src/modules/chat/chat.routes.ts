@@ -5,6 +5,7 @@ import { FastifyInstance, FastifyPluginAsync } from "fastify";
 import { z } from "zod";
 import { authenticate } from "../../plugins/authenticate";
 import { chatService, getVisibleMessages } from "./chat.service";
+import { getRealtimeManager } from "../../realtime/socket";
 
 const chatIdParamSchema = z.object({
   chatId: z.string().uuid("Invalid chat ID"),
@@ -41,6 +42,14 @@ export const chatRoutes: FastifyPluginAsync = async (app: FastifyInstance) => {
     async (request, reply) => {
       const { recipientId } = createDirectChatSchema.parse(request.body);
       const result = await chatService.createOrGetDirectChat(request.user.sub, recipientId);
+
+      const realtime = getRealtimeManager();
+      if (realtime) {
+        realtime.joinChatRoom(request.user.sub, result.id);
+        realtime.joinChatRoom(recipientId, result.id);
+        realtime.emitToUser(recipientId, "chat:added", { chatId: result.id });
+      }
+
       return reply.status(200).send(result);
     }
   );
