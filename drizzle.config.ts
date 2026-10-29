@@ -11,7 +11,8 @@ export default defineConfig({
   schema: "./src/db/schema.ts",
   out: "./drizzle",
   dbCredentials: {
-    url: process.env.DATABASE_URL || "",
+    // Direct/unpooled connection required for DDL migrations on Neon
+    url: process.env.DATABASE_URL_UNPOOLED || process.env.DATABASE_URL || "",
   },
   verbose: true,
   strict: true,

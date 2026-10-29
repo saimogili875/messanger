@@ -17,6 +17,8 @@ const envSchema = z.object({
   HOST: z.string().default("0.0.0.0"),
   NODE_ENV: z.enum(["development", "production", "test"]).default("development"),
   DATABASE_URL: z.string().url("DATABASE_URL must be a valid PostgreSQL connection URL"),
+  DATABASE_URL_UNPOOLED: z.string().url().optional(),
+  NEON_BRANCH: z.string().optional(),
   TEST_DATABASE_URL: z.string().url().optional(),
   JWT_SECRET: z
     .string()

@@ -11,8 +11,13 @@ const connectionString =
     ? env.TEST_DATABASE_URL
     : env.DATABASE_URL;
 
+// Disable prepared statements when connecting through Neon PgBouncer transaction pooler
+const isPooled = connectionString.includes("-pooler");
+
 // Connection pool configured via environment connection string
-export const client = postgres(connectionString);
+export const client = postgres(connectionString, {
+  prepare: !isPooled,
+});
 
 // Drizzle ORM database instance with registered schema
 export const db = drizzle(client, { schema });
