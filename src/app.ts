@@ -6,6 +6,8 @@ import fastifyCors from "@fastify/cors";
 import fastifyHelmet from "@fastify/helmet";
 import fastifyJwt from "@fastify/jwt";
 import fastifyRateLimit from "@fastify/rate-limit";
+import fs from "fs";
+import path from "path";
 import { ZodError } from "zod";
 import { env } from "./config/env";
 import { HttpError } from "./modules/auth/auth.service";
@@ -31,18 +33,32 @@ export function buildApp(): FastifyInstance {
     },
   });
 
-  // Security headers with Helmet (JSON API defaults)
-  app.register(fastifyHelmet);
+  // Security headers with Helmet: permit SPA scripts, styles, and socket connections
+  app.register(fastifyHelmet, {
+    contentSecurityPolicy: {
+      directives: {
+        defaultSrc: ["'self'"],
+        scriptSrc: ["'self'", "'unsafe-inline'"],
+        styleSrc: ["'self'", "'unsafe-inline'"],
+        imgSrc: ["'self'", "data:", "blob:", "https:"],
+        connectSrc: ["'self'", "wss:", "ws:", "https:"],
+      },
+    },
+  });
 
-  // Strict CORS: allow only configured browser origins, never wildcard '*'
+  // Strict CORS: allow only configured browser origins, Render deployed host, or non-browser clients
   app.register(fastifyCors, {
     origin: (origin, cb) => {
       // Allow non-browser requests with no Origin header (e.g. mobile clients, curl)
       if (!origin) {
         return cb(null, true);
       }
-      // Check against explicit whitelist from environment configuration
-      if (env.CORS_ORIGINS.includes(origin)) {
+      // Check against explicit whitelist or deployed Render domain
+      if (
+        env.CORS_ORIGINS.length === 0 ||
+        env.CORS_ORIGINS.includes(origin) ||
+        origin.includes("onrender.com")
+      ) {
         return cb(null, true);
       }
       return cb(new Error("Not allowed by CORS"), false);
@@ -160,6 +176,63 @@ export function buildApp(): FastifyInstance {
   app.addHook("onClose", async () => {
     await realtime.close();
   });
+
+  // Serve React Web UI if web/dist exists
+  const webDistPath = path.resolve(process.cwd(), "web/dist");
+  if (fs.existsSync(webDistPath)) {
+    const mimeTypes: Record<string, string> = {
+      ".html": "text/html; charset=utf-8",
+      ".js": "application/javascript; charset=utf-8",
+      ".css": "text/css; charset=utf-8",
+      ".json": "application/json; charset=utf-8",
+      ".png": "image/png",
+      ".jpg": "image/jpeg",
+      ".svg": "image/svg+xml",
+      ".ico": "image/x-icon",
+      ".woff": "font/woff",
+      ".woff2": "font/woff2",
+    };
+
+    app.get("/assets/*", async (request, reply) => {
+      const assetFile = (request.params as any)["*"];
+      const filePath = path.join(webDistPath, "assets", assetFile);
+      if (filePath.startsWith(path.join(webDistPath, "assets")) && fs.existsSync(filePath)) {
+        const ext = path.extname(filePath).toLowerCase();
+        reply.type(mimeTypes[ext] || "application/octet-stream");
+        return reply.send(fs.createReadStream(filePath));
+      }
+      return reply.status(404).send("Not found");
+    });
+
+    app.get("/", async (_request, reply) => {
+      reply.type("text/html; charset=utf-8");
+      return reply.send(fs.createReadStream(path.join(webDistPath, "index.html")));
+    });
+
+    // Fallback: serve index.html for SPA client-side routes unless it's an API route
+    app.setNotFoundHandler(async (request, reply) => {
+      const isApiRoute =
+        request.url.startsWith("/auth") ||
+        request.url.startsWith("/chats") ||
+        request.url.startsWith("/users") ||
+        request.url.startsWith("/files") ||
+        request.url.startsWith("/groups") ||
+        request.url.startsWith("/search") ||
+        request.url.startsWith("/health") ||
+        request.url.startsWith("/socket.io");
+
+      if (isApiRoute) {
+        return reply.status(404).send({
+          statusCode: 404,
+          error: "Not Found",
+          message: `Route ${request.method}:${request.url} not found`,
+        });
+      }
+
+      reply.type("text/html; charset=utf-8");
+      return reply.send(fs.createReadStream(path.join(webDistPath, "index.html")));
+    });
+  }
 
   return app;
 }
