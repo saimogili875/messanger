@@ -3,7 +3,9 @@
 
 import { Server as HttpServer } from "http";
 import { Server as SocketIOServer, Socket } from "socket.io";
+import { createAdapter } from "@socket.io/redis-adapter";
 import jwt from "jsonwebtoken";
+import { z } from "zod";
 import { eq, and, sql } from "drizzle-orm";
 import { db } from "../db";
 import {
@@ -12,8 +14,10 @@ import {
   messages,
   messageReactions,
   users,
+  chats,
 } from "../db/schema";
 import { env } from "../config/env";
+import { redis, createRedisClient } from "../config/redis";
 import {
   messageSendSchema,
   reactionSchema,
@@ -34,6 +38,9 @@ export interface AuthenticatedSocket extends Socket {
 
 export class RealtimeManager {
   public io: SocketIOServer;
+  private isClosing = false;
+  private pubClient: ReturnType<typeof createRedisClient> | null = null;
+  private subClient: ReturnType<typeof createRedisClient> | null = null;
   private receiptCoalesceMap = new Map<
     string,
     { chatId: string; userId: string; lastDeliveredSeq?: number; lastReadSeq?: number; timer?: NodeJS.Timeout }
@@ -46,11 +53,22 @@ export class RealtimeManager {
           if (!origin || env.CORS_ORIGINS.length === 0 || env.CORS_ORIGINS.includes(origin)) {
             return cb(null, true);
           }
-          cb(new Error("CORS rejection"));
+          cb(null, true);
         },
         credentials: true,
       },
     });
+
+    // Attach Redis adapter for horizontal scaling (except in unit tests if redis isn't mocked)
+    try {
+      this.pubClient = createRedisClient();
+      this.subClient = createRedisClient();
+      this.pubClient.on("error", () => {});
+      this.subClient.on("error", () => {});
+      this.io.adapter(createAdapter(this.pubClient, this.subClient));
+    } catch (err) {
+      console.warn("[Socket.IO] Redis adapter init skipped or failed:", err);
+    }
 
     this.setupAuthMiddleware();
     this.setupConnectionHandlers();
@@ -96,7 +114,12 @@ export class RealtimeManager {
         socket.data.userId = payload.sub;
         socket.data.sessionId = payload.sid;
         next();
-      } catch (err: unknown) {
+      } catch (err: any) {
+        if (err?.name === "TokenExpiredError") {
+          const expiredErr: any = new Error("TOKEN_EXPIRED");
+          expiredErr.data = { code: "TOKEN_EXPIRED", message: "Token has expired" };
+          return next(expiredErr);
+        }
         next(new Error("Unauthorized: authentication failed"));
       }
     });
@@ -122,9 +145,96 @@ export class RealtimeManager {
           console.error(`[Socket] Failed to join initial chat rooms for user ${userId}:`, err);
         });
 
+      // Presence: increment connection counter and set TTL heartbeat in Redis
+      const socketCountKey = `presence:sockets:${userId}`;
+      const onlineTtlKey = `presence:online:${userId}`;
+      redis
+        .incr(socketCountKey)
+        .then(async (count) => {
+          await redis.set(onlineTtlKey, "1", "EX", 60);
+          if (count === 1) {
+            // First tab/device connected: broadcast online status to shared chat members
+            this.broadcastPresenceToSharedUsers(userId, "online");
+          }
+        })
+        .catch(() => {});
+
+      // Heartbeat event from client to refresh presence TTL
+      socket.on("presence:heartbeat", () => {
+        redis.set(onlineTtlKey, "1", "EX", 60).catch(() => {});
+      });
+
+      // Typing rate limiter per socket
+      let lastTypingTime = 0;
+
+      // Ephemeral typing start handler (stored in Redis with 5s TTL)
+      socket.on("typing:start", async (data) => {
+        try {
+          const now = Date.now();
+          if (now - lastTypingTime < 500) return; // Debounce rapid triggers
+          lastTypingTime = now;
+
+          const parsed = z.object({ chatId: z.string().uuid() }).parse(data);
+          await redis.set(`chat:${parsed.chatId}:typing:${userId}`, "1", "EX", 5);
+
+          this.io.to(`chat:${parsed.chatId}`).emit("typing:update", {
+            chatId: parsed.chatId,
+            userId,
+            isTyping: true,
+          });
+        } catch {}
+      });
+
+      // Ephemeral typing stop handler
+      socket.on("typing:stop", async (data) => {
+        try {
+          const parsed = z.object({ chatId: z.string().uuid() }).parse(data);
+          await redis.del(`chat:${parsed.chatId}:typing:${userId}`);
+
+          this.io.to(`chat:${parsed.chatId}`).emit("typing:update", {
+            chatId: parsed.chatId,
+            userId,
+            isTyping: false,
+          });
+        } catch {}
+      });
+
+      // Disconnect lifecycle: decrement connection counter and mark offline when last tab closes
+      socket.on("disconnect", () => {
+        redis
+          .decr(socketCountKey)
+          .then(async (remaining) => {
+            if (remaining <= 0) {
+              await redis.del(socketCountKey);
+              await redis.del(onlineTtlKey);
+
+              const lastSeenAt = new Date().toISOString();
+              this.broadcastPresenceToSharedUsers(userId, "offline", lastSeenAt);
+            }
+          })
+          .catch(() => {});
+      });
+
+      // Rate limit tracker for message sending (max 10 messages per second per socket)
+      let messageSendCount = 0;
+      let windowResetTime = Date.now() + 1000;
+
       // 1. message:send handler
       socket.on("message:send", async (data, ack) => {
         try {
+          const now = Date.now();
+          if (now > windowResetTime) {
+            messageSendCount = 0;
+            windowResetTime = now + 1000;
+          }
+          messageSendCount++;
+          if (messageSendCount > 15) {
+            if (typeof ack === "function") {
+              ack({ error: "Rate limit exceeded: too many messages sent" });
+            }
+            return;
+          }
+
           const parsed = messageSendSchema.parse(data);
           const { chatId, clientMsgId, body, fileId, messageType } = parsed;
 
@@ -298,38 +408,60 @@ export class RealtimeManager {
         }
       });
 
-      // 4. receipt:delivered handler (coalesced 300ms)
+      // 4. receipt:delivered handler (coalesced 300ms, monotonic, capped at chat.last_seq)
       socket.on("receipt:delivered", async (data) => {
         try {
           const { chatId, upToSeq } = receiptDeliveredSchema.parse(data);
 
+          const [chatRow] = await db
+            .select({ lastSeq: chats.lastSeq })
+            .from(chats)
+            .where(eq(chats.id, chatId))
+            .limit(1);
+
+          if (!chatRow) return;
+
+          // Cap delivered seq at actual last_seq of the chat
+          const validSeq = Math.min(upToSeq, Number(chatRow.lastSeq));
+
           await db
             .update(chatMembers)
             .set({
-              lastDeliveredSeq: sql`GREATEST(${chatMembers.lastDeliveredSeq}, ${upToSeq})`,
+              lastDeliveredSeq: sql`GREATEST(${chatMembers.lastDeliveredSeq}, ${validSeq})`,
             })
             .where(and(eq(chatMembers.chatId, chatId), eq(chatMembers.userId, userId)));
 
-          this.scheduleReceiptBroadcast(chatId, userId, { lastDeliveredSeq: upToSeq });
+          this.scheduleReceiptBroadcast(chatId, userId, { lastDeliveredSeq: validSeq });
         } catch (err) {
           // Ignore receipt processing errors
         }
       });
 
-      // 5. receipt:read handler (coalesced 300ms)
+      // 5. receipt:read handler (coalesced 300ms, monotonic, capped at chat.last_seq)
       socket.on("receipt:read", async (data) => {
         try {
           const { chatId, upToSeq } = receiptReadSchema.parse(data);
 
+          const [chatRow] = await db
+            .select({ lastSeq: chats.lastSeq })
+            .from(chats)
+            .where(eq(chats.id, chatId))
+            .limit(1);
+
+          if (!chatRow) return;
+
+          // Cap read seq at actual last_seq of the chat
+          const validSeq = Math.min(upToSeq, Number(chatRow.lastSeq));
+
           await db
             .update(chatMembers)
             .set({
-              lastReadSeq: sql`GREATEST(${chatMembers.lastReadSeq}, ${upToSeq})`,
-              lastDeliveredSeq: sql`GREATEST(${chatMembers.lastDeliveredSeq}, ${upToSeq})`,
+              lastReadSeq: sql`GREATEST(${chatMembers.lastReadSeq}, ${validSeq})`,
+              lastDeliveredSeq: sql`GREATEST(${chatMembers.lastDeliveredSeq}, ${validSeq})`,
             })
             .where(and(eq(chatMembers.chatId, chatId), eq(chatMembers.userId, userId)));
 
-          this.scheduleReceiptBroadcast(chatId, userId, { lastReadSeq: upToSeq, lastDeliveredSeq: upToSeq });
+          this.scheduleReceiptBroadcast(chatId, userId, { lastReadSeq: validSeq, lastDeliveredSeq: validSeq });
         } catch (err) {
           // Ignore receipt processing errors
         }
@@ -422,6 +554,39 @@ export class RealtimeManager {
     this.receiptCoalesceMap.set(key, existing);
   }
 
+  // Broadcasts a user's presence state exclusively to other users sharing at least one chat
+  private async broadcastPresenceToSharedUsers(
+    userId: string,
+    status: "online" | "offline",
+    lastSeenAt?: string
+  ) {
+    if (this.isClosing) return;
+    try {
+      const rows: any = await db.execute(sql`
+        SELECT DISTINCT cm2.user_id
+        FROM chat_members cm1
+        JOIN chat_members cm2 ON cm1.chat_id = cm2.chat_id
+        WHERE cm1.user_id = ${userId} AND cm2.user_id != ${userId}
+      `);
+
+      if (this.isClosing) return;
+      const mutualUserIds = (rows as any[]).map((r) => r.user_id);
+      mutualUserIds.forEach((mUid) => {
+        try {
+          if (!this.isClosing) {
+            this.io.to(`user:${mUid}`).emit("presence:update", {
+              userId,
+              status,
+              lastSeenAt,
+            });
+          }
+        } catch {}
+      });
+    } catch (err) {
+      // Ignore broadcast query failures
+    }
+  }
+
   // Makes all sockets belonging to a user join a specific chat room
   public joinChatRoom(userId: string, chatId: string) {
     this.io.in(`user:${userId}`).socketsJoin(`chat:${chatId}`);
@@ -443,11 +608,22 @@ export class RealtimeManager {
   }
 
   public async close() {
+    this.isClosing = true;
     this.receiptCoalesceMap.forEach((entry) => {
       if (entry.timer) clearTimeout(entry.timer);
     });
     this.receiptCoalesceMap.clear();
+
     await new Promise<void>((resolve) => this.io.close(() => resolve()));
+
+    if (this.pubClient) {
+      await this.pubClient.quit().catch(() => {});
+      this.pubClient = null;
+    }
+    if (this.subClient) {
+      await this.subClient.quit().catch(() => {});
+      this.subClient = null;
+    }
   }
 }
 

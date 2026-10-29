@@ -214,6 +214,21 @@ export const sessions = pgTable(
   ]
 );
 
+// Used refresh tokens table tracking rotated tokens to detect replay and reuse attacks
+export const usedRefreshTokens = pgTable(
+  "used_refresh_tokens",
+  {
+    tokenHash: text("token_hash").primaryKey(),
+    sessionId: uuid("session_id")
+      .notNull()
+      .references(() => sessions.id, { onDelete: "cascade" }),
+    usedAt: timestamp("used_at", { withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => [
+    index("used_refresh_tokens_session_id_idx").on(table.sessionId),
+  ]
+);
+
 // Inferred TypeScript types for selecting and inserting rows
 export type User = typeof users.$inferSelect;
 export type NewUser = typeof users.$inferInsert;

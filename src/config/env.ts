@@ -18,7 +18,27 @@ const envSchema = z.object({
   NODE_ENV: z.enum(["development", "production", "test"]).default("development"),
   DATABASE_URL: z.string().url("DATABASE_URL must be a valid PostgreSQL connection URL"),
   TEST_DATABASE_URL: z.string().url().optional(),
-  JWT_SECRET: z.string().min(32, "JWT_SECRET must be at least 32 characters long"),
+  JWT_SECRET: z
+    .string()
+    .min(32, "JWT_SECRET must be at least 32 characters long")
+    .refine(
+      (secret) => {
+        if (process.env.NODE_ENV === "production") {
+          return (
+            secret !== "supersecretjwtkeyatleast32characterslong123456" &&
+            !secret.toLowerCase().includes("placeholder") &&
+            !secret.toLowerCase().includes("example")
+          );
+        }
+        return true;
+      },
+      {
+        message:
+          "Insecure JWT_SECRET: placeholder secrets from .env.example are strictly forbidden in production",
+      }
+    ),
+  TRUST_PROXY: z.coerce.boolean().default(false),
+  LOGIN_RATE_LIMIT_PER_ACCOUNT: z.coerce.number().default(5),
   CORS_ORIGINS: z
     .string()
     .default("")

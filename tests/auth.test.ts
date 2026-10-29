@@ -427,4 +427,53 @@ describe("Authentication & Session Integration Tests", () => {
     expect(res.headers["x-content-type-options"]).toBe("nosniff");
     expect(res.headers["x-frame-options"]).toBe("SAMEORIGIN");
   });
+
+  it("11. Refresh token reuse detection revokes the entire session", async () => {
+    const ip = getIp();
+    const loginRes = await app.inject({
+      method: "POST",
+      url: "/auth/login",
+      remoteAddress: ip,
+      payload: testUser,
+    });
+    const { refreshToken: tokenA } = JSON.parse(loginRes.payload);
+
+    // First rotation: tokenA -> tokenB
+    const rot1 = await app.inject({
+      method: "POST",
+      url: "/auth/refresh",
+      remoteAddress: ip,
+      payload: { refreshToken: tokenA },
+    });
+    expect(rot1.statusCode).toBe(200);
+    const { refreshToken: tokenB, accessToken: accessB } = JSON.parse(rot1.payload);
+
+    // Replay attack: present old tokenA again
+    const reuseRes = await app.inject({
+      method: "POST",
+      url: "/auth/refresh",
+      remoteAddress: ip,
+      payload: { refreshToken: tokenA },
+    });
+    expect(reuseRes.statusCode).toBe(401);
+    expect(JSON.parse(reuseRes.payload).error).toMatch(/Token reuse detected/i);
+
+    // Verify tokenB is now ALSO invalidated because session was revoked
+    const rot2 = await app.inject({
+      method: "POST",
+      url: "/auth/refresh",
+      remoteAddress: ip,
+      payload: { refreshToken: tokenB },
+    });
+    expect(rot2.statusCode).toBe(401);
+
+    // Verify access token accessB is now rejected on /me
+    const meRes = await app.inject({
+      method: "GET",
+      url: "/me",
+      remoteAddress: ip,
+      headers: { authorization: `Bearer ${accessB}` },
+    });
+    expect(meRes.statusCode).toBe(401);
+  });
 });

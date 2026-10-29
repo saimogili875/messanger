@@ -5,7 +5,7 @@ import crypto from "crypto";
 import argon2 from "argon2";
 import { eq, and, isNull, gt } from "drizzle-orm";
 import { db } from "../../db";
-import { users, sessions, devices, User } from "../../db/schema";
+import { users, sessions, devices, usedRefreshTokens, User } from "../../db/schema";
 import { RegisterInput, LoginInput } from "./auth.schemas";
 
 // Standard application error containing HTTP status code
@@ -52,21 +52,29 @@ export class AuthService {
       type: argon2.argon2id,
     });
 
-    const [newUser] = await db
-      .insert(users)
-      .values({
-        email: input.email,
-        passwordHash,
-        displayName: input.displayName,
-      })
-      .returning({
-        id: users.id,
-        email: users.email,
-        displayName: users.displayName,
-        createdAt: users.createdAt,
-      });
+    try {
+      const [newUser] = await db
+        .insert(users)
+        .values({
+          email: input.email,
+          passwordHash,
+          displayName: input.displayName,
+        })
+        .returning({
+          id: users.id,
+          email: users.email,
+          displayName: users.displayName,
+          createdAt: users.createdAt,
+        });
 
-    return newUser;
+      return newUser;
+    } catch (err: any) {
+      // Handle concurrent registration duplicate race condition cleanly (Postgres 23505 unique violation)
+      if (err?.code === "23505" || err?.message?.includes("unique")) {
+        throw new HttpError(409, "Email already registered");
+      }
+      throw err;
+    }
   }
 
   // Verifies credentials, records device activity, and creates a new session
@@ -164,44 +172,73 @@ export class AuthService {
     };
   }
 
-  // Atomically rotates the refresh token within the same session using a single SQL UPDATE
+  // Atomically rotates the refresh token and detects token reuse (revoking session on replay attacks)
   async rotateRefreshToken(
     rawRefreshToken: string
   ): Promise<{ userId: string; sessionId: string; newRefreshToken: string }> {
     const oldRefreshTokenHash = hashToken(rawRefreshToken);
+
+    // 1. Check if token was already used (Token Reuse Detection)
+    const [usedRecord] = await db
+      .select({ sessionId: usedRefreshTokens.sessionId })
+      .from(usedRefreshTokens)
+      .where(eq(usedRefreshTokens.tokenHash, oldRefreshTokenHash))
+      .limit(1);
+
+    if (usedRecord) {
+      // Replay attack detected! Immediately revoke the entire compromised session
+      await db
+        .update(sessions)
+        .set({ revokedAt: new Date() })
+        .where(eq(sessions.id, usedRecord.sessionId));
+
+      throw new HttpError(
+        401,
+        "Token reuse detected: session has been revoked for security"
+      );
+    }
+
     const newRawRefreshToken = generateRefreshToken();
     const newRefreshTokenHash = hashToken(newRawRefreshToken);
     const newExpiresAt = new Date(Date.now() + REFRESH_TOKEN_TTL_MS);
 
-    // Atomic update: only one concurrent request can match the old hash
-    const [updatedSession] = await db
-      .update(sessions)
-      .set({
-        refreshTokenHash: newRefreshTokenHash,
-        lastUsedAt: new Date(),
-        expiresAt: newExpiresAt,
-      })
-      .where(
-        and(
-          eq(sessions.refreshTokenHash, oldRefreshTokenHash),
-          isNull(sessions.revokedAt),
-          gt(sessions.expiresAt, new Date())
+    // 2. Perform rotation inside a transaction: record used token and update session
+    return await db.transaction(async (tx) => {
+      const [updatedSession] = await tx
+        .update(sessions)
+        .set({
+          refreshTokenHash: newRefreshTokenHash,
+          lastUsedAt: new Date(),
+          expiresAt: newExpiresAt,
+        })
+        .where(
+          and(
+            eq(sessions.refreshTokenHash, oldRefreshTokenHash),
+            isNull(sessions.revokedAt),
+            gt(sessions.expiresAt, new Date())
+          )
         )
-      )
-      .returning({
-        id: sessions.id,
-        userId: sessions.userId,
+        .returning({
+          id: sessions.id,
+          userId: sessions.userId,
+        });
+
+      if (!updatedSession) {
+        throw new HttpError(401, "Invalid or expired refresh token");
+      }
+
+      // Record old token in used_refresh_tokens
+      await tx.insert(usedRefreshTokens).values({
+        tokenHash: oldRefreshTokenHash,
+        sessionId: updatedSession.id,
       });
 
-    if (!updatedSession) {
-      throw new HttpError(401, "Invalid or expired refresh token");
-    }
-
-    return {
-      userId: updatedSession.userId,
-      sessionId: updatedSession.id,
-      newRefreshToken: newRawRefreshToken,
-    };
+      return {
+        userId: updatedSession.userId,
+        sessionId: updatedSession.id,
+        newRefreshToken: newRawRefreshToken,
+      };
+    });
   }
 
   // Revokes the session associated with the refresh token on logout

@@ -32,7 +32,7 @@ export class ClamAvService {
       return { isInfected: false };
     }
 
-    return new Promise((resolve) => {
+    return new Promise((resolve, reject) => {
       const socket = net.createConnection({ host: this.host, port: this.port }, () => {
         // Send zINSTREAM command
         socket.write("zINSTREAM\0");
@@ -71,14 +71,13 @@ export class ClamAvService {
       });
 
       socket.on("error", (err) => {
-        // If ClamAV daemon is unreachable during local development, log warning and let file pass
-        console.warn("⚠️ ClamAV daemon unreachable:", err.message);
-        resolve({ isInfected: false });
+        // Fail closed: never allow files to pass as clean when the antivirus daemon is offline or failing
+        reject(new Error(`ClamAV daemon unreachable: ${err.message}`));
       });
 
       socket.setTimeout(10000, () => {
         socket.destroy();
-        resolve({ isInfected: false });
+        reject(new Error("ClamAV scan timed out"));
       });
     });
   }

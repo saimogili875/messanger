@@ -20,6 +20,7 @@ import { initRealtimeManager } from "./realtime/socket";
 
 export function buildApp(): FastifyInstance {
   const app = fastify({
+    trustProxy: env.TRUST_PROXY,
     logger: {
       level: env.NODE_ENV === "test" ? "silent" : "info",
       redact: [

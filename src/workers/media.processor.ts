@@ -7,6 +7,7 @@ import os from "os";
 import { execFile } from "child_process";
 import { promisify } from "util";
 import sharp from "sharp";
+import { PDFDocument } from "pdf-lib";
 import { eq } from "drizzle-orm";
 import { db } from "../db";
 import { files } from "../db/schema";
@@ -125,26 +126,62 @@ export class MediaProcessor {
       .where(eq(files.id, fileId));
   }
 
-  // Processes PDFs: extracts page 1 thumbnail and estimates page count
+  // Processes PDFs: parses page count via pdf-lib and extracts real page 1 thumbnail
   private async processPdf(fileId: string, buffer: Buffer): Promise<void> {
-    // Generate simple placeholder thumbnail via sharp canvas or svg rasterization
-    const thumbBuffer = await sharp({
-      create: {
-        width: 320,
-        height: 420,
-        channels: 4,
-        background: { r: 245, g: 247, b: 250, alpha: 1 },
-      },
-    })
-      .webp()
-      .toBuffer();
+    // 1. Accurate page count extraction using real PDF parser (pdf-lib)
+    let pageCount = 1;
+    try {
+      const pdfDoc = await PDFDocument.load(buffer, { ignoreEncryption: true });
+      pageCount = pdfDoc.getPageCount();
+    } catch {
+      const matches = buffer.toString("binary").match(/\/Type\s*\/Page[^s]/g);
+      pageCount = matches ? matches.length : 1;
+    }
+
+    // 2. Render real page 1 thumbnail if pdftoppm is available, otherwise crisp SVG card
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), `pdf_thumb_${fileId}_`));
+    const inputPdf = path.join(tempDir, "input.pdf");
+    const outPrefix = path.join(tempDir, "page");
+
+    let thumbBuffer: Buffer;
+    try {
+      fs.writeFileSync(inputPdf, buffer);
+      await execFileAsync("pdftoppm", ["-png", "-r", "150", "-f", "1", "-l", "1", inputPdf, outPrefix], {
+        timeout: 10000,
+      });
+
+      const generatedPage = fs
+        .readdirSync(tempDir)
+        .find((f) => f.startsWith("page-") && f.endsWith(".png"));
+
+      if (generatedPage) {
+        thumbBuffer = await sharp(path.join(tempDir, generatedPage))
+          .resize(320, 420, { fit: "cover" })
+          .webp({ quality: 80 })
+          .toBuffer();
+      } else {
+        throw new Error("Page image not produced");
+      }
+    } catch {
+      // Clean fallback: SVG document thumbnail preview with dynamic page count badge
+      const svgCard = `
+        <svg width="320" height="420" xmlns="http://www.w3.org/2000/svg">
+          <rect width="320" height="420" fill="#f8fafc" rx="8"/>
+          <rect x="20" y="20" width="280" height="380" fill="#ffffff" stroke="#e2e8f0" stroke-width="2" rx="4"/>
+          <rect x="110" y="140" width="100" height="70" fill="#fee2e2" rx="4"/>
+          <text x="160" y="185" font-family="system-ui, -apple-system, sans-serif" font-size="24" font-weight="bold" fill="#dc2626" text-anchor="middle">PDF</text>
+          <text x="160" y="240" font-family="system-ui, -apple-system, sans-serif" font-size="14" font-weight="500" fill="#475569" text-anchor="middle">${pageCount} ${pageCount === 1 ? "page" : "pages"}</text>
+        </svg>
+      `;
+      thumbBuffer = await sharp(Buffer.from(svgCard)).webp().toBuffer();
+    } finally {
+      try {
+        fs.rmSync(tempDir, { recursive: true, force: true });
+      } catch {}
+    }
 
     const thumbnailKey = `${fileId}/thumb.webp`;
     await storageService.putObject(thumbnailKey, thumbBuffer, "image/webp");
-
-    // Estimate page count from PDF binary markers
-    const matches = buffer.toString("binary").match(/\/Type\s*\/Page[^s]/g);
-    const pageCount = matches ? matches.length : 1;
 
     await db
       .update(files)

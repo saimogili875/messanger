@@ -9,6 +9,8 @@ import {
   logoutSchema,
 } from "./auth.schemas";
 import { authService } from "./auth.service";
+import { redis } from "../../config/redis";
+import { env } from "../../config/env";
 
 export const authRoutes: FastifyPluginAsync = async (app: FastifyInstance) => {
   // POST /auth/register - Create a new user account
@@ -44,9 +46,38 @@ export const authRoutes: FastifyPluginAsync = async (app: FastifyInstance) => {
     },
     async (request, reply) => {
       const body = loginSchema.parse(request.body);
+      const emailLower = body.email.toLowerCase();
+
+      // Per-account rate limiting (max 5 failed attempts per account per minute)
+      try {
+        const key = `rl:login:acc:${emailLower}`;
+        const attempts = await redis.incr(key);
+        if (attempts === 1) {
+          await redis.expire(key, 60);
+        }
+        if (attempts > env.LOGIN_RATE_LIMIT_PER_ACCOUNT) {
+          const ttl = await redis.ttl(key);
+          return reply.status(429).send({
+            statusCode: 429,
+            error: "Too many requests, please try again later.",
+            message: `Too many login attempts for this account. Try again in ${Math.max(1, ttl)} seconds.`,
+            retryAfter: Math.max(1, ttl),
+          });
+        }
+      } catch (err) {
+        // Fallback to IP rate limiter if Redis is offline
+      }
+
       const userAgent = request.headers["user-agent"];
       const { user, sessionId, deviceId, refreshToken } =
         await authService.login(body, userAgent);
+
+      // Reset account rate limit on successful login
+      try {
+        await redis.del(`rl:login:acc:${emailLower}`);
+      } catch {
+        // Ignore redis cleanup error
+      }
 
       // Access JWT payload contains strictly { sub: userId, sid: sessionId } (15-minute expiration)
       const accessToken = app.jwt.sign(

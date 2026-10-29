@@ -43,13 +43,9 @@ export class StorageService {
     this.bucket = env.R2_BUCKET_NAME;
   }
 
-  // Determines whether to use the mock storage provider during tests or local dummy configs
+  // Strictly isolates mock storage to NODE_ENV=test only; never triggered by dummy env values
   private isTestOrMock(): boolean {
-    return (
-      env.NODE_ENV === "test" ||
-      env.R2_ACCOUNT_ID === "test-account" ||
-      env.R2_ACCOUNT_ID === "local-test-account"
-    );
+    return env.NODE_ENV === "test";
   }
 
   // Generates a short-lived (~15 min) presigned URL for direct client-to-R2 single PUT upload

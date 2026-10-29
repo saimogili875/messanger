@@ -63,6 +63,25 @@ services:
           cpus: '1.5'
           memory: 1536M
 
+  integration-test:
+    profiles: ["integration"]
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.worker
+    container_name: messenger-integration-test
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      - NODE_ENV=test
+      - DATABASE_URL=postgresql://postgres:postgrespassword@postgres:5432/messenger_test
+      - REDIS_URL=redis://redis:6379
+      - CLAMAV_HOST=clamav
+      - CLAMAV_PORT=3310
+    command: ["npx", "vitest", "run", "tests/media.test.ts"]
+
 volumes:
   postgres_data:
   redis_data:
