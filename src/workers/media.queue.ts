@@ -5,10 +5,14 @@ import { Queue } from "bullmq";
 import IORedis from "ioredis";
 import { env } from "../config/env";
 
-// Shared Redis client for BullMQ job dispatching
+// Shared Redis client for BullMQ job dispatching with mandatory maxRetriesPerRequest: null
+const isTls =
+  env.REDIS_URL.startsWith("rediss://") || env.REDIS_URL.includes("upstash.io");
+
 export const redisConnection = new IORedis(env.REDIS_URL, {
   maxRetriesPerRequest: null,
   lazyConnect: true,
+  tls: isTls ? {} : undefined,
 });
 
 export interface MediaJobData {

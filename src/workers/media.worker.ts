@@ -7,11 +7,15 @@ import { mediaProcessor } from "./media.processor";
 import { env } from "../config/env";
 
 const redisUrl = new URL(env.REDIS_URL);
+const isTls =
+  redisUrl.protocol === "rediss:" || env.REDIS_URL.includes("upstash.io");
+
 const connection = {
   host: redisUrl.hostname,
   port: parseInt(redisUrl.port || "6379", 10),
   password: redisUrl.password || undefined,
   username: redisUrl.username || undefined,
+  tls: isTls ? {} : undefined,
   maxRetriesPerRequest: null,
 };
 
